@@ -1,0 +1,52 @@
+{
+  "$comment": "Backup tiers for Azure VMs. Deployed by infrastructure/main.bicep into every regional vault; validated by tests/DisasterRecovery.Tests.ps1. Values are examples: set them from the organization's data protection policy. rpoHours and rtoHours are TARGETS, not measured results.",
+  "tagName": "BackupTier",
+  "tiers": [
+    {
+      "name": "Critical",
+      "label": "Critical: customer-facing, financial, identity",
+      "policyName": "pol-vm-critical-6h",
+      "policyType": "V2",
+      "frequency": "Hourly",
+      "everyHours": 6,
+      "startTimeUtc": "04:00",
+      "windowHours": 24,
+      "instantRestoreDays": 7,
+      "retention": { "days": 30, "weeks": 8, "months": 24, "years": 7 },
+      "targets": { "rpoHours": 6, "rtoHours": 4, "recoveryMethod": "Azure Site Recovery failover (regional); instant restore (logical)" }
+    },
+    {
+      "name": "Business-Essential",
+      "label": "Business-Essential: internal apps the business needs day to day",
+      "policyName": "pol-vm-business-essential-daily",
+      "policyType": "V1",
+      "frequency": "Daily",
+      "startTimeUtc": "05:00",
+      "instantRestoreDays": 5,
+      "retention": { "days": 30, "weeks": 8, "months": 12, "years": 0 },
+      "targets": { "rpoHours": 24, "rtoHours": 24, "recoveryMethod": "Cross Region Restore from the paired region" }
+    },
+    {
+      "name": "Operational",
+      "label": "Operational: supporting services such as file servers, jump boxes, and tooling",
+      "policyName": "pol-vm-operational-daily",
+      "policyType": "V1",
+      "frequency": "Daily",
+      "startTimeUtc": "06:00",
+      "instantRestoreDays": 2,
+      "retention": { "days": 30, "weeks": 4, "months": 0, "years": 0 },
+      "targets": { "rpoHours": 24, "rtoHours": 72, "recoveryMethod": "Cross Region Restore, or rebuild from IaC plus data restore" }
+    },
+    {
+      "name": "Non-Production",
+      "label": "Non-Production: dev, test, and sandbox",
+      "policyName": "pol-vm-non-production-daily",
+      "policyType": "V1",
+      "frequency": "Daily",
+      "startTimeUtc": "07:00",
+      "instantRestoreDays": 2,
+      "retention": { "days": 14, "weeks": 0, "months": 0, "years": 0 },
+      "targets": { "rpoHours": 24, "rtoHours": 168, "recoveryMethod": "Rebuild from IaC; restore only if needed" }
+    }
+  ]
+}
