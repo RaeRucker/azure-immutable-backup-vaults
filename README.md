@@ -239,7 +239,7 @@ To delete a vault that isn't locked, turn off immutability, stop backup and dele
 | `docs/how-tiering-works.md` | When a VM is enrolled, what happens when a tag changes, and the limits |
 | `docs/auto-enroll-with-azure-policy.md` | Auto-enroll setup, coverage queries and exclusions |
 | `docs/images/how-it-works.png` | The diagram at the top of this page |
-| `tools/build_diagram.py` | Rebuilds the diagram from `config/backup-tiers.json`. Run `python tools/build_diagram.py config/backup-tiers.json /tmp/d.svg` then `rsvg-convert /tmp/d.svg -o docs/images/how-it-works.png` |
+| `tools/build_diagram.py` | Rebuilds the diagram from `config/backup-tiers.json`. Download Microsoft's [Azure architecture icons](https://learn.microsoft.com/azure/architecture/icons/), then run `python tools/build_diagram.py --icons <icon folder> --out /tmp/d.svg` and `rsvg-convert /tmp/d.svg -o docs/images/how-it-works.png` |
 | `docs/recovery-objectives.md` | RPO and RTO targets per tier |
 | `docs/design-decisions/` | Why the vaults are built the way they are |
 | `runbooks/backup-restore-validation.md` | How to test a restore |

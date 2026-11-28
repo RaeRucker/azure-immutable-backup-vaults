@@ -1,108 +1,238 @@
 """Draws docs/images/how-it-works.png from config/backup-tiers.json.
 
-Run after changing the tier config:
-    python tools/build_diagram.py config/backup-tiers.json /tmp/how-it-works.svg
+Uses Microsoft's Azure architecture icons, which Microsoft allows in architecture
+diagrams. Download them from https://learn.microsoft.com/azure/architecture/icons/
+and point --icons at the folder that holds the SVGs.
+
+    python tools/build_diagram.py --icons <icon folder> --out /tmp/how-it-works.svg
     rsvg-convert /tmp/how-it-works.svg -o docs/images/how-it-works.png
 """
-import json, sys
-cfg = json.load(open(sys.argv[1]))
-out = sys.argv[2]
-tiers = cfg["tiers"]
-COL = {"Critical": "#B03A2E", "Business-Essential": "#B9770E", "Operational": "#1F618D", "Non-Production": "#5D6D7E"}
-W, H = 1800, 1130
-F = "font-family=\"Inter, DejaVu Sans, sans-serif\""
-el = []
-def t(x, y, s, size=18, weight=400, fill="#1B2631", anchor="start"):
-    el.append(f'<text x="{x}" y="{y}" {F} font-size="{size}" font-weight="{weight}" fill="{fill}" text-anchor="{anchor}">{s}</text>')
-def box(x, y, w, h, stroke="#AAB7B8", fill="#FFFFFF", r=10, dash=None, sw=2):
+import argparse
+import base64
+import json
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+
+# ---- Settings -------------------------------------------------------------
+REGION = "East US 2"
+REGION_CODE = "eastus2"
+PAIRED_REGION = "Central US"
+SUBSCRIPTION = "sub-contoso-prod"
+WORKLOAD_RG = "rg-workloads"
+VAULT_RG = f"rg-backup-{REGION_CODE}"
+VAULT = f"rsv-contoso-prod-{REGION_CODE}"
+WORKSPACE = "law-contoso-prod"
+SAMPLE_VMS = ["vm-web01", "vm-erp01", "vm-files01", "vm-dev01"]
+AUTHOR = "Rae Rucker"
+REVISION = "Rev 2026-11"
+ICONS = {
+    "vm": "Virtual-Machine.svg",
+    "policy": "Policy.svg",
+    "vault": "Recovery-Services-Vaults.svg",
+    "law": "Log-Analytics-Workspaces.svg",
+    "sub": "Subscriptions.svg",
+    "rg": "Resource-Groups.svg",
+    "tag": "Tags.svg",
+}
+# ---------------------------------------------------------------------------
+
+NAVY = "#0B2545"
+BLUE = "#1F5FBF"
+INK = "#1D2733"
+MUTED = "#5B6875"
+LINE = "#8A96A3"
+FAINT = "#C9D1D9"
+TIER_COLORS = {"Critical": "#B42318", "Business-Essential": "#C4661F", "Operational": "#1F5FBF", "Non-Production": "#6B7785"}
+SANS = 'font-family="DejaVu Sans Condensed, DejaVu Sans, sans-serif"'
+MONO = 'font-family="DejaVu Sans Mono, monospace"'
+
+parts = []
+
+
+def text(x, y, s, size=15, weight=400, fill=INK, anchor="start", mono=False, spacing=None):
+    ls = f' letter-spacing="{spacing}"' if spacing else ""
+    parts.append(f'<text x="{x}" y="{y}" {MONO if mono else SANS} font-size="{size}" font-weight="{weight}" '
+                 f'fill="{fill}" text-anchor="{anchor}"{ls}>{s}</text>')
+
+
+def rect(x, y, w, h, stroke=LINE, fill="none", sw=1.2, dash=None):
     d = f' stroke-dasharray="{dash}"' if dash else ""
-    el.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{r}" fill="{fill}" stroke="{stroke}" stroke-width="{sw}"{d}/>')
-def arrow(x1, y1, x2, y2, color="#566573", dash=None):
+    parts.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="{fill}" stroke="{stroke}" stroke-width="{sw}"{d}/>')
+
+
+def line(points, color=INK, sw=1.6, dash=None, arrow=True):
     d = f' stroke-dasharray="{dash}"' if dash else ""
-    mx = (x1 + x2) / 2
-    el.append(f'<path d="M{x1},{y1} C{mx},{y1} {mx},{y2} {x2},{y2}" fill="none" stroke="{color}" stroke-width="2.5"{d} marker-end="url(#a)"/>')
+    m = ' marker-end="url(#arrow)"' if arrow else ""
+    pts = " ".join(f"{x},{y}" for x, y in points)
+    parts.append(f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="{sw}"{d}{m}/>')
 
-def sched(tr):
-    s = f"Every {tr['everyHours']} hours" if tr["frequency"] == "Hourly" else "Daily"
-    r = tr["retention"]; parts = [f"{r['days']} days"]
-    if r["weeks"]: parts.append(f"{r['weeks']} weekly")
-    if r["months"]: parts.append(f"{r['months']} monthly")
-    if r["years"]: parts.append(f"{r['years']} yearly")
-    return s, "Keeps " + ", ".join(parts)
 
-t(60, 70, "How auto-enroll and backup tiers work", 34, 700)
-t(60, 106, f"Tag a VM with {cfg['tagName']} and Azure Policy backs it up in its region's vault with that tier's policy. This repeats in every region.", 19, 400, "#566573")
+def icon(name, x, y, size=34):
+    data = base64.b64encode((ICON_DIR / ICONS[name]).read_bytes()).decode()
+    parts.append(f'<image x="{x}" y="{y}" width="{size}" height="{size}" href="data:image/svg+xml;base64,{data}"/>')
 
-# column headers
-for x, n, s in [(60, "1", "Tag the VM"), (560, "2", "Azure Policy, one assignment per tier"), (1100, "3", "Vault in the same region")]:
-    el.append(f'<circle cx="{x+16}" cy="164" r="16" fill="#1B2631"/>'); t(x + 16, 170, n, 17, 700, "#FFFFFF", "middle")
-    t(x + 44, 171, s, 22, 700)
 
-# column 1: VMs
-vms = ["vm-web01", "vm-erp01", "vm-files01", "vm-dev01"]
-rowy = [215, 345, 475, 605]
-for i, tr in enumerate(tiers):
-    y = rowy[i]; c = COL[tr["name"]]
-    box(60, y, 380, 100, c, "#FFFFFF")
-    el.append(f'<rect x="60" y="{y}" width="10" height="100" rx="4" fill="{c}"/>')
-    t(90, y + 40, vms[i], 20, 600)
-    t(90, y + 72, f"{cfg['tagName']} = {tr['name']}", 18, 500, c)
-box(60, 735, 380, 100, "#AAB7B8", "#FBFCFC", dash="8 6")
-t(90, 775, "vm-test01", 20, 600, "#7B7D7D"); t(90, 807, "No tag: never enrolled", 18, 400, "#7B7D7D")
+def step(n, x, y):
+    parts.append(f'<rect x="{x - 11}" y="{y - 11}" width="22" height="22" fill="{NAVY}"/>')
+    text(x, y + 5, str(n), 13, 700, "#FFFFFF", "middle")
 
-# column 2: assignments
-for i, tr in enumerate(tiers):
-    y = rowy[i]; c = COL[tr["name"]]
-    box(560, y, 440, 100, c, "#FFFFFF")
-    t(585, y + 40, f"backup-{tr['name'].lower()}-eastus2", 20, 600)
-    t(585, y + 72, f"Tag = {tr['name']}  and  region = eastus2", 17, 400, "#566573")
-    arrow(440, y + 50, 560, y + 50, c)
-box(560, 735, 440, 100, "#D5D8DC", "#F4F6F6")
-t(585, 772, "New or newly tagged VMs enroll on their own.", 17, 500)
-t(585, 802, "VMs tagged before auto-enroll was set up", 17, 400, "#566573")
-t(585, 826, "need a remediation task once.", 17, 400, "#566573")
 
-# column 3: vault
-box(1100, 195, 640, 660, "#1B2631", "#F8F9F9", r=14, sw=2.5)
-t(1130, 240, "rsv-contoso-prod-eastus2", 22, 700)
-t(1130, 268, "Recovery Services vault", 17, 400, "#566573")
-for i, tr in enumerate(tiers):
-    y = rowy[i] + 75 if False else 290 + i * 112; c = COL[tr["name"]]
-    box(1130, y, 580, 96, c, "#FFFFFF")
-    el.append(f'<rect x="1130" y="{y}" width="10" height="96" rx="4" fill="{c}"/>')
-    s1, s2 = sched(tr)
-    t(1158, y + 32, tr["policyName"], 19, 600)
-    t(1158, y + 59, s1, 17, 500, c)
-    t(1158, y + 83, s2, 16, 400, "#566573")
-    arrow(1000, rowy[i] + 50, 1130, y + 48, c)
-# vault settings chips
-chips = ["Immutable", "Soft delete always on", "Geo-redundant"]
-cx = 1130
-for ch in chips:
-    w = 22 + len(ch) * 9.6
-    box(cx, 752, w, 40, "#1B2631", "#1B2631", r=20)
-    t(cx + w / 2, 778, ch, 16, 600, "#FFFFFF", "middle"); cx += w + 14
-t(1130, 830, "Immutability is locked only after a restore test passes.", 16, 400, "#566573")
+def boundary(x, y, w, h, label, kind, dash=None):
+    rect(x, y, w, h, LINE, "none", 1.2, dash)
+    icon(kind, x + 10, y + 9, 20)
+    text(x + 36, y + 24, label, 13, 700, MUTED, spacing="0.4")
 
-# bottom row: what happens next
-el.append('<circle cx="76" cy="908" r="16" fill="#1B2631"/>'); t(76, 914, "4", 17, 700, "#FFFFFF", "middle")
-t(104, 915, "After that", 22, 700)
-by = 950
-box(60, by, 520, 140, "#AAB7B8"); t(85, by + 40, "Paired region copy", 20, 700)
-t(85, by + 72, "Every backup is copied to the paired region.", 17, 400, "#566573")
-t(85, by + 98, "Cross Region Restore lets you restore there", 17, 400, "#566573")
-t(85, by + 122, "if the main region is down.", 17, 400, "#566573")
-box(640, by, 520, 140, "#AAB7B8"); t(665, by + 40, "Logs to Log Analytics", 20, 700)
-t(665, by + 72, "Jobs, policies, storage and protected items", 17, 400, "#566573")
-t(665, by + 98, "feed the daily backup report and alerts.", 17, 400, "#566573")
-box(1220, by, 520, 140, "#AAB7B8"); t(1245, by + 40, "Changing a VM's tier", 20, 700)
-t(1245, by + 72, "Changing the tag doesn't move a VM that's", 17, 400, "#566573")
-t(1245, by + 98, "already backed up. Switch its policy in the", 17, 400, "#566573")
-t(1245, by + 122, "vault under Backup items.", 17, 400, "#566573")
 
-svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}">
-<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#566573"/></marker></defs>
+def schedule(t):
+    every = f"every {t['everyHours']} h" if t["frequency"] == "Hourly" else "daily"
+    r = t["retention"]
+    keep = [f"{r['days']}d"] + [f"{r[k]}{u}" for k, u in (("weeks", "w"), ("months", "m"), ("years", "y")) if r[k]]
+    return every, " / ".join(keep)
+
+
+def build(cfg):
+    tiers = cfg["tiers"]
+    tag = cfg["tagName"]
+    W, H = 1840, 1150
+
+    # Title block
+    parts.append(f'<rect x="0" y="0" width="{W}" height="6" fill="{NAVY}"/>')
+    text(48, 66, "Azure Backup auto-enroll by tier", 30, 700, NAVY)
+    text(48, 96, f"A VM's {tag} tag decides which backup policy protects it. Azure Policy does the enrollment. Same layout in every region.", 16, 400, MUTED)
+    rect(1480, 34, 312, 70, FAINT, "#FFFFFF", 1)
+    parts.append(f'<line x1="1480" y1="69" x2="1792" y2="69" stroke="{FAINT}" stroke-width="1"/>')
+    parts.append(f'<line x1="1636" y1="69" x2="1636" y2="104" stroke="{FAINT}" stroke-width="1"/>')
+    text(1494, 58, AUTHOR.upper(), 14, 700, NAVY, spacing="1.5")
+    text(1494, 93, "Architecture", 13, 400, MUTED)
+    text(1650, 93, REVISION, 13, 400, MUTED, mono=True)
+
+    # Subscription and region boundaries
+    boundary(40, 130, 1760, 790, f"SUBSCRIPTION  ·  {SUBSCRIPTION}", "sub")
+    boundary(70, 200, 1360, 690, f"REGION  ·  {REGION.upper()}", "rg", dash="6 4")
+    boundary(96, 280, 380, 580, WORKLOAD_RG, "rg")
+    boundary(960, 280, 450, 580, VAULT_RG, "rg")
+
+    # Policy assignments sit at subscription scope, drawn across the region they target
+    rect(540, 280, 356, 580, NAVY, "#F5F7FA", 1.4)
+    icon("policy", 556, 294, 26)
+    text(590, 313, "Azure Policy assignments", 14, 700, NAVY)
+    text(556, 340, "Subscription scope, one per tier", 12.5, 400, MUTED)
+
+    # Vault header
+    icon("vault", 976, 318, 30)
+    text(1014, 333, VAULT, 14, 700, INK, mono=True)
+    text(1014, 352, "Recovery Services vault", 12.5, 400, MUTED)
+
+    row_top = 392
+    row_h = 104
+    for i, t in enumerate(tiers):
+        y = row_top + i * row_h
+        cy = y + 38
+        color = TIER_COLORS.get(t["name"], BLUE)
+
+        # VM
+        rect(112, y, 348, 78, FAINT, "#FFFFFF", 1)
+        icon("vm", 124, y + 10, 30)
+        text(166, y + 31, SAMPLE_VMS[i] if i < len(SAMPLE_VMS) else f"vm-{i + 1:02}", 15, 700, INK, mono=True)
+        icon("tag", 166, y + 44, 16)
+        parts.append(f'<rect x="188" y="{y + 45}" width="10" height="14" fill="{color}"/>')
+        text(204, y + 57, f"{tag} = {t['name']}", 13, 400, MUTED, mono=True)
+
+        # Assignment
+        rect(556, y, 324, 78, color, "#FFFFFF", 1.4)
+        parts.append(f'<rect x="556" y="{y}" width="5" height="78" fill="{color}"/>')
+        text(572, y + 31, f"backup-{t['name'].lower()}-{REGION_CODE}", 13, 700, INK, mono=True)
+        text(572, y + 56, f"{REGION_CODE} + {tag}={t['name']}", 12, 400, MUTED, mono=True)
+
+        # Vault policy
+        every, keep = schedule(t)
+        rect(976, y, 418, 78, FAINT, "#FFFFFF", 1)
+        parts.append(f'<rect x="976" y="{y}" width="5" height="78" fill="{color}"/>')
+        text(994, y + 31, t["policyName"], 14, 700, INK, mono=True)
+        text(994, y + 56, f"{every}   keep {keep}", 13, 400, MUTED, mono=True)
+
+        # Connectors
+        line([(460, cy), (554, cy)], LINE, 1.4)
+        line([(880, cy), (974, cy)], color, 1.8)
+
+    # Step markers on the first row
+    step(1, 507, row_top + 38)
+    step(2, 927, row_top + 38)
+
+    # Vault properties
+    py = row_top + 4 * row_h + 4
+    props = ["Immutable", "Soft delete always on", "Geo-redundant + CRR"]
+    x = 976
+    for p in props:
+        w = 20 + len(p) * 6.9
+        rect(x, py, w, 28, NAVY, NAVY, 1)
+        text(x + w / 2, py + 19, p, 12.5, 700, "#FFFFFF", "middle")
+        x += w + 8
+
+    # Paired region and Log Analytics, inside the subscription, outside the region
+    boundary(1460, 200, 310, 270, f"PAIRED REGION  ·  {PAIRED_REGION.upper()}", "rg", dash="6 4")
+    icon("vault", 1480, 256, 36)
+    text(1526, 271, "Secondary copy", 15, 700, INK)
+    text(1526, 292, "of every backup", 13, 400, MUTED)
+    text(1480, 336, "Restore here with Cross", 13, 400, MUTED)
+    text(1480, 356, "Region Restore if the", 13, 400, MUTED)
+    text(1480, 376, "main region is down.", 13, 400, MUTED)
+    line([(1410, 500), (1438, 500), (1438, 320), (1470, 320)], BLUE, 1.6, "7 5")
+    step(3, 1438, 410)
+
+    rect(1460, 560, 310, 230, LINE, "none", 1.2)
+    icon("law", 1480, 580, 36)
+    text(1526, 595, WORKSPACE, 13.5, 700, INK, mono=True)
+    text(1526, 615, "Log Analytics workspace", 12.5, 400, MUTED)
+    text(1480, 660, "Backup jobs, policies, storage", 13, 400, MUTED)
+    text(1480, 680, "and protected items. Feeds the", 13, 400, MUTED)
+    text(1480, 700, "daily backup report and alerts.", 13, 400, MUTED)
+    line([(1410, 680), (1472, 680)], BLUE, 1.6, "7 5")
+    step(4, 1438, 680)
+
+    # Notes, like a drawing's notes block
+    ny = 962
+    text(48, ny, "NOTES", 13, 700, NAVY, spacing="1.5")
+    parts.append(f'<line x1="48" y1="{ny + 10}" x2="1792" y2="{ny + 10}" stroke="{FAINT}" stroke-width="1"/>')
+    notes = [
+        ("1", "Tag match", f"Each assignment matches VMs in its region whose {tag} tag equals its tier. Untagged VMs are never enrolled."),
+        ("2", "Enrollment", "DeployIfNotExists turns on backup in the vault with that tier's policy. New or newly tagged VMs enroll on their own."),
+        ("3", "Paired region", "Geo-redundant storage copies each backup to the paired region. Cross Region Restore restores from it."),
+        ("4", "Logs", "Diagnostic settings send backup logs to resource-specific tables in Log Analytics."),
+    ]
+    for i, (n, title, body) in enumerate(notes):
+        y = ny + 44 + i * 30
+        step(n, 60, y - 5)
+        text(84, y, title, 14, 700, INK)
+        text(204, y, body, 14, 400, MUTED)
+    gy = ny + 44 + 4 * 30 + 12
+    text(84, gy, "Also:", 14, 700, INK)
+    text(204, gy, "VMs tagged before auto-enroll existed need one remediation task. Changing a tag doesn't move a VM that's already backed up. Custom-image VMs aren't matched.", 14, 400, MUTED)
+
+    # Legend
+    lx, ly = 1480, ny + 44
+    line([(lx, ly - 5), (lx + 46, ly - 5)], INK, 1.8)
+    text(lx + 58, ly, "Enrollment", 13, 400, MUTED)
+    line([(lx, ly + 25), (lx + 46, ly + 25)], BLUE, 1.6, "7 5")
+    text(lx + 58, ly + 30, "Data copy or logs", 13, 400, MUTED)
+    rect(lx, ly + 47, 46, 18, LINE, "none", 1.2, "6 4")
+    text(lx + 58, ly + 61, "Region boundary", 13, 400, MUTED)
+
+    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}">
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="{INK}"/></marker></defs>
 <rect width="{W}" height="{H}" fill="#FFFFFF"/>
-{chr(10).join(el)}
+{chr(10).join(parts)}
 </svg>'''
-open(out, "w").write(svg)
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--icons", required=True, help="Folder with Microsoft's Azure icon SVGs")
+    ap.add_argument("--config", default=str(ROOT / "config" / "backup-tiers.json"))
+    ap.add_argument("--out", required=True, help="SVG file to write")
+    args = ap.parse_args()
+    ICON_DIR = Path(args.icons)
+    cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
+    Path(args.out).write_text(build(cfg), encoding="utf-8")
+    print(f"wrote {args.out}")
