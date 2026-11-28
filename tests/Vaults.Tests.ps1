@@ -1,6 +1,6 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.5.0' }
 <#
-    Static tests for the tier design rules, the compiled vault template, and the lock script.
+    Static tests for the tier design rules, the compiled vault and auto-enroll templates, and the lock script.
     Run: Invoke-Pester ./tests -Output Detailed   (requires the Bicep CLI on PATH)
 #>
 
@@ -18,6 +18,13 @@ BeforeAll {
     $script:vault = $script:resources | Where-Object type -EQ 'Microsoft.RecoveryServices/vaults'
     $script:policy = $script:resources | Where-Object type -EQ 'Microsoft.RecoveryServices/vaults/backupPolicies'
     $script:root = $root
+
+    $aeOut = Join-Path ([System.IO.Path]::GetTempPath()) "auto-enroll-tests-$PID.json"
+    & bicep build (Join-Path $root 'infrastructure/auto-enroll.bicep') --outfile $aeOut 2>&1 | Out-Null
+    $script:aeBuildExit = $LASTEXITCODE
+    $script:ae = Get-Content -Raw $aeOut | ConvertFrom-Json -Depth 100
+    $aeRes = $script:ae.resources
+    $script:aeResources = @(if ($aeRes -is [System.Management.Automation.PSCustomObject]) { $aeRes.PSObject.Properties.Value } else { $aeRes })
 }
 
 Describe 'Backup tier design' {
@@ -87,6 +94,48 @@ Describe 'Compiled vault template' {
         $categories | Should -Contain 'AddonAzureBackupJobs'
         # These categories only write to the AzureDiagnostics table, not resource-specific tables.
         $categories | Where-Object { $_ -eq 'AzureBackupReport' -or $_ -like 'AzureSiteRecovery*' } | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Compiled auto-enroll template' {
+    BeforeAll {
+        $script:assignment = $script:aeResources | Where-Object type -EQ 'Microsoft.Authorization/policyAssignments'
+        $script:aeJson = $script:ae | ConvertTo-Json -Depth 50
+    }
+
+    It 'compiles' { $script:aeBuildExit | Should -Be 0 }
+
+    It 'deploys at subscription scope' {
+        $script:ae.'$schema' | Should -Match 'subscriptionDeploymentTemplate'
+    }
+
+    It 'creates one policy assignment per tier from the config' {
+        $script:assignment.copy.count | Should -Match 'tiers'
+    }
+
+    It 'uses the built-in tag-based VM backup policy' {
+        $script:aeJson | Should -Match '345fa903-145c-4fe1-8bcd-93ec2adccde8'
+    }
+
+    It 'matches VMs on the tier tag and points each tier at its own backup policy' {
+        $p = $script:assignment.properties.parameters
+        $p.inclusionTagName.value | Should -Match 'tagName'
+        ($p.inclusionTagValue.value -join ' ') | Should -Match 'name'
+        $p.backupPolicyId.value | Should -Match 'policyName'
+        $p.vaultLocation.value | Should -Match "parameters\('location'\)"
+    }
+
+    It 'gives each assignment a managed identity' {
+        $script:assignment.identity.type | Should -Be 'SystemAssigned'
+    }
+
+    It 'grants Virtual Machine Contributor and Backup Contributor, the roles the built-in policy asks for' {
+        $script:aeJson | Should -Match '9980e02c-c2be-4d73-94e8-173b1dc7cf3c'
+        $script:aeJson | Should -Match '5e467623-bb1f-42f4-a55d-6e525e11384b'
+    }
+
+    It 'turns backup on by default' {
+        $script:ae.parameters.effect.defaultValue | Should -Be 'DeployIfNotExists'
     }
 }
 

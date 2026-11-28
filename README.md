@@ -1,8 +1,10 @@
-# Immutable Azure Backup Vaults
+# Immutable Azure Backup Vaults with Auto-Enroll Tiers
 
-Bicep that builds Recovery Services vaults whose backups can't be deleted early, even by an admin, plus a set of VM backup policies split into four tiers.
+Bicep that builds Recovery Services vaults whose backups can't be deleted early, even by an admin, with VM backup policies split into four tiers. Azure Policy then puts every tagged VM into its region's vault and the right tier's policy on its own.
 
-You deploy one vault per region from Azure Cloud Shell. The names, regions and tier values here are examples, so change them to fit your environment.
+You deploy everything from Azure Cloud Shell, one region at a time. The names, regions and tier values here are examples, so change them to fit your environment.
+
+![How auto-enroll and backup tiers work](docs/images/how-it-works.png)
 
 ## What it does
 
@@ -26,9 +28,11 @@ The tiers:
 | Operational | File servers, jump boxes, tooling | Daily | 30 days, 4 weekly |
 | Non-Production | Dev, test, sandbox | Daily | 14 days |
 
-Every vault gets the same policy names. Once auto-enroll is set up, tagging a VM with `BackupTier = Critical` is all it takes to back it up.
+Every vault gets the same policy names, so the same tag works in every region.
 
-There's also a script that locks immutability once you've tested a restore, a guide to auto-enroll VMs with Azure Policy, and a restore test runbook.
+Auto-enroll adds one Azure Policy assignment per tier in each region. When a VM is created or tagged with `BackupTier = Critical`, the Critical assignment for its region turns on backup in that region's vault with the Critical policy. [How the tiering works](docs/how-tiering-works.md) covers exactly when a VM is enrolled, what happens when a tag changes, and which VMs it can't pick up.
+
+There's also a script that locks immutability once you've tested a restore, and a restore test runbook.
 
 ## Permissions
 
@@ -39,14 +43,15 @@ There's also a script that locks immutability once you've tested a restore, a gu
 | You, to tag VMs | Tag Contributor | The VMs or their resource groups | To add the `BackupTier` tag |
 | You, to set up auto-enroll | Resource Policy Contributor | Each subscription | To assign the Azure Policy |
 | You, to set up auto-enroll | Owner, User Access Administrator, or Role Based Access Control Administrator | Each subscription | To give the policy's managed identity its roles |
-| The policy's managed identity | Virtual Machine Contributor and Backup Contributor | Each subscription | To turn on backup for tagged VMs. The portal assigns these for you. |
+| Each auto-enroll assignment's managed identity | Virtual Machine Contributor | Each subscription | To turn on backup for tagged VMs. The auto-enroll deployment gives this for you. |
+| Each auto-enroll assignment's managed identity | Backup Contributor | The vault's resource group | To add VMs to the vault. The auto-enroll deployment gives this for you. |
 | You, to test a restore | Backup Operator | The vault | To start the restore |
 | You, to test a restore | Virtual Machine Contributor | The VM that was backed up | Restores read settings from the original VM |
 | You, to test a restore | Contributor | The resource group the test VM goes in | To create the restored VM and connect it to the test network |
 | You, to test a restore | Storage Account Contributor | The staging storage account | Restores copy data through it |
 | You, to lock immutability | Contributor, or Backup Contributor plus Tag Contributor | The vault | To lock the vault and write the lock details into its tags |
 
-A managed identity is an account Azure creates for the policy assignment itself, so it can make changes without a stored password. Backup Contributor can't create vaults, which is why deploying needs Contributor.
+A managed identity is an account Azure creates for each policy assignment, so it can make changes without a stored password. Backup Contributor can't create vaults, which is why deploying needs Contributor.
 
 ## What to change for your environment
 
@@ -65,6 +70,8 @@ A managed identity is an account Azure creates for the policy assignment itself,
 | Tier RPO and RTO targets | In `config/backup-tiers.json`, under `targets`. Hours. The tests check them against the schedule. |
 | Policy names | In `config/backup-tiers.json`, `policyName`. Keep them the same in every vault so auto-enroll works everywhere. |
 | VM tag | The tag name is `BackupTier`, set in `config/backup-tiers.json` as `tagName`. Values must match a tier `name` exactly, like `Critical`. |
+| Auto-enroll `location`, `vaultResourceGroupName` and `vaultName` | In each `infrastructure/environments/auto-enroll-<region>.bicepparam` file. The region, and the name and resource group of that region's vault. |
+| Auto-enroll `effect` | In the same files. `DeployIfNotExists` turns backup on. `AuditIfNotExists` only reports what would be enrolled. |
 | `-ResourceGroupName` and `-VaultName` | When you run the lock script. The vault's resource group and name. `-VaultName` takes more than one name. |
 | `-RestoreTestReference` | When you run the lock script. The ID of your passed restore test, 3 to 64 letters, numbers, dots, dashes or underscores, like `CHG-2026-0412`. |
 | `-LockedByTagName`, `-LockedOnTagName`, `-EvidenceTagName` | Optional, when you run the lock script. The tag names it writes on the vault. Defaults are `immutabilityLockedBy`, `immutabilityLockedOn` and `immutabilityEvidence`. |
@@ -135,7 +142,22 @@ Each deployment should end with `"provisioningState": "Succeeded"`.
 
 ### Step 6. Turn on auto-enroll
 
-Follow the [auto-enroll guide](docs/auto-enroll-with-azure-policy.md). It walks through assigning the Azure Policy in the portal so every tagged VM gets backed up by the right policy.
+1. Open each `infrastructure/environments/auto-enroll-<region>.bicepparam` file with `code`, set the vault name and resource group from Step 3, then save.
+2. Preview:
+
+   ```bash
+   for region in eastus2 centralus; do
+     az deployment sub what-if -l "$region" --template-file infrastructure/auto-enroll.bicep \
+       --parameters "infrastructure/environments/auto-enroll-$region.bicepparam"
+   done
+   ```
+
+   You should see four policy assignments per region, plus their role assignments.
+3. Deploy by running the same loop with `create` in place of `what-if`.
+4. In the portal, open Policy → Authoring → Assignments. You should see `backup-critical-eastus2` and the rest, one per tier per region.
+5. VMs you tagged in Step 5 before this step need a one-time remediation task. Wait 10 minutes, then follow [Step 4 of the auto-enroll guide](docs/auto-enroll-with-azure-policy.md#step-4-enroll-vms-that-were-already-tagged).
+
+From now on, new VMs and newly tagged VMs enroll on their own, usually within about 30 minutes. The [auto-enroll guide](docs/auto-enroll-with-azure-policy.md) also has a portal-only way to do this, coverage queries, and how to leave VMs out.
 
 ### Step 7. Test a restore
 
@@ -162,8 +184,11 @@ The script won't lock a vault that isn't geo-redundant, doesn't have immutabilit
 
 1. Edit `config/backup-tiers.json`.
 2. Run the Step 3 commands again. The deployment updates the policies in every vault.
+3. Rebuild the diagram so it matches. See [Files](#files).
 
 On an immutable vault you can make retention longer and change the schedule, but you can't make retention shorter. Azure blocks that.
+
+To move one VM to a different tier, changing its tag isn't enough. See [Moving a VM to a different tier](docs/how-tiering-works.md#moving-a-vm-to-a-different-tier).
 
 ## If something goes wrong
 
@@ -173,14 +198,17 @@ On an immutable vault you can make retention longer and change the schedule, but
 | Deployment fails on the diagnostic setting | Check `workspaceId`. It has to be the full resource ID, not just the workspace name. |
 | Deployment fails when changing a policy | You made retention shorter on an immutable vault. Azure only allows longer retention. |
 | Storage redundancy can't be changed | It can't change once the first backup is configured. If the vault is still empty, delete it and deploy again. |
-| A tagged VM isn't getting backed up | Check the tag spelling, then run a remediation task under Policy → Remediation |
+| A tagged VM isn't getting backed up | Check the tag spelling and the VM's region. If it was tagged before Step 6, run a remediation task. [How the tiering works](docs/how-tiering-works.md#what-happens-to-a-vm) lists the cases auto-enroll can't pick up. |
+| A VM stayed on its old tier after you changed the tag | That's expected. See [Moving a VM to a different tier](docs/how-tiering-works.md#moving-a-vm-to-a-different-tier). |
 | Secondary Region shows no backup items | Items can take up to 48 hours to show up after Cross Region Restore is turned on |
 | The lock script won't lock | Read the warning. It says which check failed. |
 | The lock script fails on `Update-AzTag` | The vault is already locked, but you don't have Tag Contributor. Add the three tags by hand under the vault's Tags. |
 
 ## How it's built
 
-`infrastructure/main.bicep` reads the tiers from `config/backup-tiers.json` and creates one policy per tier in a loop. You deploy it once per region with that region's `.bicepparam` file.
+`infrastructure/main.bicep` reads the tiers from `config/backup-tiers.json` and creates one backup policy per tier in a loop. You deploy it once per region with that region's `.bicepparam` file.
+
+`infrastructure/auto-enroll.bicep` reads the same config and creates one policy assignment per tier, at subscription scope, for one region. Each assignment matches VMs in that region with that tier's tag and points at that tier's backup policy in that region's vault. It also gives each assignment's identity the two roles the built-in policy needs, with Backup Contributor limited to the vault's resource group.
 
 A few choices worth explaining:
 
@@ -202,10 +230,16 @@ To delete a vault that isn't locked, turn off immutability, stop backup and dele
 | File | What it is |
 |---|---|
 | `infrastructure/main.bicep` | The vault, its policies and its diagnostic setting |
-| `infrastructure/environments/*.bicepparam` | Settings for each region |
+| `infrastructure/auto-enroll.bicep` | The Azure Policy assignments and roles for one region |
+| `infrastructure/modules/vault-role.bicep` | Gives an assignment's identity a role on the vault's resource group |
+| `infrastructure/environments/<region>.bicepparam` | Vault settings for each region |
+| `infrastructure/environments/auto-enroll-<region>.bicepparam` | Auto-enroll settings for each region |
 | `config/backup-tiers.json` | Tier schedules, retention and recovery targets |
 | `scripts/Lock-VaultImmutability.ps1` | Locks immutability after a restore test |
-| `docs/auto-enroll-with-azure-policy.md` | How to auto-enroll tagged VMs |
+| `docs/how-tiering-works.md` | When a VM is enrolled, what happens when a tag changes, and the limits |
+| `docs/auto-enroll-with-azure-policy.md` | Auto-enroll setup, coverage queries and exclusions |
+| `docs/images/how-it-works.png` | The diagram at the top of this page |
+| `tools/build_diagram.py` | Rebuilds the diagram from `config/backup-tiers.json`. Run `python tools/build_diagram.py config/backup-tiers.json /tmp/d.svg` then `rsvg-convert /tmp/d.svg -o docs/images/how-it-works.png` |
 | `docs/recovery-objectives.md` | RPO and RTO targets per tier |
 | `docs/design-decisions/` | Why the vaults are built the way they are |
 | `runbooks/backup-restore-validation.md` | How to test a restore |
@@ -216,7 +250,7 @@ To delete a vault that isn't locked, turn off immutability, stop backup and dele
 
 CI runs on every push to main and on every pull request. It fails if any of these happen:
 
-- `main.bicep` or either `.bicepparam` file doesn't build, or the Bicep linter reports an error
+- `main.bicep`, `auto-enroll.bicep` or any `.bicepparam` file doesn't build, or the Bicep linter reports an error
 - PSScriptAnalyzer finds a warning or error in `scripts` or `tests`
 - a Pester test fails
 - gitleaks finds a secret
@@ -229,6 +263,7 @@ The Pester tests compile the Bicep and check that:
 - a more critical tier never has weaker targets or shorter daily retention than the tier below it
 - the vault has geo-redundant storage, Cross Region Restore, immutability and always-on soft delete
 - nothing in the template locks a vault
+- auto-enroll creates one assignment per tier with the built-in tag policy, matches the tier tag, points each tier at its own backup policy, and grants the two roles the policy needs
 - logs go to resource-specific tables
 - the lock script asks for confirmation, supports `-WhatIf` and requires a restore test ID
 - every relative link in the docs works
@@ -246,4 +281,6 @@ Invoke-Pester ./tests -Output Detailed
 - Policy times are in UTC.
 - Cross Region Restore can lag up to 36 hours, which is longer than the 24 hour RPO targets.
 - The lock script only counts protected Azure VMs.
+- Auto-enroll can't move a VM that's already backed up to a different tier, and it doesn't match VMs built from custom or gallery images. Both are covered in [How the tiering works](docs/how-tiering-works.md).
+- Auto-enroll works one subscription at a time. Deploy it in each subscription that has VMs.
 - Azure SQL and PostgreSQL backups aren't covered. Those are set up on the database side.
