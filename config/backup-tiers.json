@@ -1,10 +1,10 @@
 {
-  "$comment": "Backup tiers for Azure VMs. Deployed by infrastructure/main.bicep into every regional vault; validated by tests/DisasterRecovery.Tests.ps1. Values are examples: set them from the organization's data protection policy. rpoHours and rtoHours are TARGETS, not measured results.",
+  "$comment": "Backup tiers for Azure VMs. infrastructure/main.bicep creates one policy per tier in every vault, and tests/Vaults.Tests.ps1 checks them. The values are examples. Set them from your own data protection requirements. rpoHours and rtoHours are targets, not measured results.",
   "tagName": "BackupTier",
   "tiers": [
     {
       "name": "Critical",
-      "label": "Critical: customer-facing, financial, identity",
+      "label": "Critical: public-facing, financial, identity",
       "policyName": "pol-vm-critical-6h",
       "policyType": "V2",
       "frequency": "Hourly",

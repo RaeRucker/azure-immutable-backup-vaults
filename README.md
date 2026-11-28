@@ -1,51 +1,81 @@
 # Immutable Azure Backup Vaults
 
-Bicep that builds Recovery Services vaults a compromised admin account can't wipe, plus a set of VM backup policies organized by tier.
+Bicep that builds Recovery Services vaults whose backups can't be deleted early, even by an admin, plus a set of VM backup policies split into four tiers.
 
-I've set up immutable vaults in production, one per region in each subscription. This repo is how I'd build that out as code. The names, regions and tier values here are examples.
+You deploy one vault per region from Azure Cloud Shell. The names, regions and tier values here are examples, so change them to fit your environment.
 
 ## What it does
 
-It creates one vault per region. Each vault gets:
+Each vault gets:
 
-- Geo-redundant storage, so a copy of every backup lives in the paired region
-- Cross Region Restore, so you can restore in that paired region if the main one goes down
-- Immutability turned on but not locked, so recovery points can't be deleted early
-- Soft delete set to always on, so deleted backups are kept for 14 more days
-- Logs sent to Log Analytics for backup reports and alerts
-- One backup policy per tier, built from [`config/backup-tiers.json`](config/backup-tiers.json)
+| Setting | What it does |
+|---|---|
+| Geo-redundant storage | Keeps a copy of every backup in the paired region |
+| Cross Region Restore | Lets you restore in the paired region if the main one goes down |
+| Immutability, turned on but not locked | Stops anyone deleting recovery points before they expire |
+| Always-on soft delete | Keeps deleted backups for 14 more days by default. It can't be turned off. |
+| Diagnostic setting | Sends backup logs to Log Analytics for reports and alerts |
+| Four backup policies | One per tier, built from [`config/backup-tiers.json`](config/backup-tiers.json) |
 
-## Tiers
+The tiers:
 
-| Tier | What goes here | Schedule | Retention |
+| Tier | What goes here | Backups | Kept for |
 |---|---|---|---|
-| Critical | Customer-facing, financial, identity | Every 6 hours | 30 days, 8 weeks, 24 months, 7 years |
-| Business-Essential | Internal apps the business needs day to day | Daily | 30 days, 8 weeks, 12 months |
-| Operational | File servers, jump boxes, tooling | Daily | 30 days, 4 weeks |
+| Critical | Public-facing, financial, identity | Every 6 hours | 30 days, 8 weekly, 24 monthly, 7 yearly |
+| Business-Essential | Internal apps people need every day | Daily | 30 days, 8 weekly, 12 monthly |
+| Operational | File servers, jump boxes, tooling | Daily | 30 days, 4 weekly |
 | Non-Production | Dev, test, sandbox | Daily | 14 days |
 
-To change a schedule or retention, edit `config/backup-tiers.json` and deploy again. Every vault gets the same policy names, so tagging a VM with `BackupTier = Critical` is all it takes to enroll it once auto-enrollment is set up.
+Every vault gets the same policy names. Once auto-enroll is set up, tagging a VM with `BackupTier = Critical` is all it takes to back it up.
+
+There's also a script that locks immutability once you've tested a restore, a guide to auto-enroll VMs with Azure Policy, and a restore test runbook.
 
 ## Permissions
 
 | Who | Role | Where it's assigned | Why |
 |---|---|---|---|
-| You, to deploy | Contributor | The resource group for each vault | To create the vault and its policies |
-| You, to deploy | Log Analytics Contributor | The Log Analytics workspace | So the vault can send logs to it |
-| You, to set up auto-enrollment | Resource Policy Contributor | Each subscription | To assign the backup policy in Azure Policy |
-| You, to set up auto-enrollment | Owner or User Access Administrator | Each subscription | Azure Policy creates an identity that needs roles to enroll VMs |
-| You, to tag VMs | Tag Contributor or Contributor | The VMs or their resource groups | To add the `BackupTier` tag |
-| You, to run a test restore | Backup Operator | The vault | To start a restore |
-| You, to run a test restore | Virtual Machine Contributor and Network Contributor | The resource group the test VM is restored into | To create the restored VM and attach it to the isolated network |
-| You, to lock immutability | Contributor or Backup Contributor | The vault | To change the vault's immutability setting |
+| You, to deploy | Contributor | The resource group for each vault | To create the vault, its policies and its diagnostic setting |
+| You, to deploy | Log Analytics Contributor | The Log Analytics workspace | To let the vault send logs to it |
+| You, to tag VMs | Tag Contributor | The VMs or their resource groups | To add the `BackupTier` tag |
+| You, to set up auto-enroll | Resource Policy Contributor | Each subscription | To assign the Azure Policy |
+| You, to set up auto-enroll | Owner, User Access Administrator, or Role Based Access Control Administrator | Each subscription | To give the policy's managed identity its roles |
+| The policy's managed identity | Virtual Machine Contributor and Backup Contributor | Each subscription | To turn on backup for tagged VMs. The portal assigns these for you. |
+| You, to test a restore | Backup Operator | The vault | To start the restore |
+| You, to test a restore | Virtual Machine Contributor | The VM that was backed up | Restores read settings from the original VM |
+| You, to test a restore | Contributor | The resource group the test VM goes in | To create the restored VM and connect it to the test network |
+| You, to test a restore | Storage Account Contributor | The staging storage account | Restores copy data through it |
+| You, to lock immutability | Contributor, or Backup Contributor plus Tag Contributor | The vault | To lock the vault and write the lock details into its tags |
+
+A managed identity is an account Azure creates for the policy assignment itself, so it can make changes without a stored password. Backup Contributor can't create vaults, which is why deploying needs Contributor.
+
+## What to change for your environment
+
+| Setting | What to put in |
+|---|---|
+| `scopeName` | In each file in `infrastructure/environments`. A short name for the subscription or workload, up to 20 characters, like `contoso-prod`. It goes into the vault name. |
+| `location` | In each file in `infrastructure/environments`. The region, like `eastus2`. Rename the file to match if you change it. |
+| `workspaceId` | In each file in `infrastructure/environments`. Resource ID of your Log Analytics workspace. Find it on the workspace under Overview → JSON View. It starts with `/subscriptions/`. Leave it as `''` to skip logs. |
+| `softDeleteRetentionDays` | In each file in `infrastructure/environments`. How many days deleted backups are kept, 14 to 180. Default is `14`. |
+| `disablePublicNetworkAccess` | In each file in `infrastructure/environments`. `true` blocks public access to the vault. Only use it if you've set up private endpoints for backup. Default is `false`. |
+| `vaultName` | Optional, add it to the `.bicepparam` file. Default is `rsv-<scopeName>-<location>`. |
+| `tags` | Optional, add it to the `.bicepparam` file. Tags on the vault, like `{ workload: 'backup', owner: 'it@contoso.com' }`. |
+| `diagnosticSettingName` and `logCategories` | Optional, add them to the `.bicepparam` file. The defaults send the backup log categories the [Daily Azure Backup Report](https://github.com/RaeRucker/azure-backup-daily-report) reads. |
+| Resource group names | In the Step 3 commands. Default is `rg-backup-<region>`. |
+| Tier schedules and retention | In `config/backup-tiers.json`. `startTimeUtc` is the backup time in UTC as `HH:MM`, on the hour or half hour. `everyHours` and `windowHours` are only for the Critical tier's hourly schedule. `instantRestoreDays` is 1 to 5 for daily tiers and 1 to 30 for Critical. `retention` is days, weeks, months and years, with `0` for none. |
+| Tier RPO and RTO targets | In `config/backup-tiers.json`, under `targets`. Hours. The tests check them against the schedule. |
+| Policy names | In `config/backup-tiers.json`, `policyName`. Keep them the same in every vault so auto-enroll works everywhere. |
+| VM tag | The tag name is `BackupTier`, set in `config/backup-tiers.json` as `tagName`. Values must match a tier `name` exactly, like `Critical`. |
+| `-ResourceGroupName` and `-VaultName` | When you run the lock script. The vault's resource group and name. `-VaultName` takes more than one name. |
+| `-RestoreTestReference` | When you run the lock script. The ID of your passed restore test, 3 to 64 letters, numbers, dots, dashes or underscores, like `CHG-2026-0412`. |
+| `-LockedByTagName`, `-LockedOnTagName`, `-EvidenceTagName` | Optional, when you run the lock script. The tag names it writes on the vault. Defaults are `immutabilityLockedBy`, `immutabilityLockedOn` and `immutabilityEvidence`. |
 
 ## Setup
 
 ### Step 1. Get the files into Cloud Shell
 
 1. Sign in to the Azure portal.
-2. Click the **Cloud Shell** icon in the top bar. It looks like `>_`.
-3. Pick **Bash** if it asks.
+2. Click the Cloud Shell icon in the top bar. It looks like `>_`.
+3. Pick Bash if it asks.
 4. Run:
 
    ```bash
@@ -53,112 +83,167 @@ To change a schedule or retention, edit `config/backup-tiers.json` and deploy ag
    cd azure-immutable-backup-vaults
    ```
 
+You should see a new `azure-immutable-backup-vaults` folder when you run `ls`.
+
 ### Step 2. Fill in your settings
 
 There's one settings file per region in `infrastructure/environments`.
 
 1. Run `code infrastructure/environments/eastus2.bicepparam` to open it in the Cloud Shell editor.
-2. Set `scopeName` to a short name for the subscription or workload. It ends up in the vault name, like `rsv-<scopeName>-eastus2`.
-3. Set `workspaceId` to your Log Analytics workspace resource ID. Find it on the workspace under **Overview → JSON View**. It starts with `/subscriptions/`.
-4. Press Ctrl+S to save, then Ctrl+Q to close.
-5. Do the same for `centralus.bicepparam`. If you use different regions, rename the files and change `location` inside them.
+2. Set `scopeName`, `workspaceId` and the other values using the table in [What to change for your environment](#what-to-change-for-your-environment).
+3. Press Ctrl+S to save, then Ctrl+Q to close.
+4. Do the same for `centralus.bicepparam`. If you use other regions, rename the files and change `location` inside them.
+5. If you want different schedules or retention, edit `config/backup-tiers.json` the same way.
 
 ### Step 3. Preview, then deploy
 
-```bash
-for region in eastus2 centralus; do
-  az group create -n "rg-backup-$region" -l "$region"
-  az deployment group what-if -g "rg-backup-$region" --template-file infrastructure/main.bicep \
-    --parameters "infrastructure/environments/$region.bicepparam"
-done
-```
+1. Create the resource groups and preview the changes:
 
-`what-if` only shows what would be created. Read through it. If it looks right, run the same loop again with `create` instead of `what-if`:
+   ```bash
+   for region in eastus2 centralus; do
+     az group create -n "rg-backup-$region" -l "$region"
+     az deployment group what-if -g "rg-backup-$region" --template-file infrastructure/main.bicep \
+       --parameters "infrastructure/environments/$region.bicepparam"
+   done
+   ```
 
-```bash
-for region in eastus2 centralus; do
-  az deployment group create -g "rg-backup-$region" --template-file infrastructure/main.bicep \
-    --parameters "infrastructure/environments/$region.bicepparam"
-done
-```
+2. Read the preview. `what-if` only shows what would be created. You should see one vault, four backup policies and one diagnostic setting per region.
+3. If it looks right, deploy:
+
+   ```bash
+   for region in eastus2 centralus; do
+     az deployment group create -g "rg-backup-$region" --template-file infrastructure/main.bicep \
+       --parameters "infrastructure/environments/$region.bicepparam"
+   done
+   ```
+
+Each deployment should end with `"provisioningState": "Succeeded"`.
 
 ### Step 4. Check the vault
 
-1. In the portal, search **Recovery Services vaults** and open the new vault.
-2. **Properties**: Backup storage redundancy should say Geo-redundant and Cross Region Restore should say Enabled.
-3. **Properties → Immutable vault**: should say Enabled, not locked.
-4. **Properties → Security settings**: soft delete should be Always on.
-5. **Manage → Backup policies**: you should see four policies, one per tier.
+1. In the portal search bar, type Recovery Services vaults and open the new vault.
+2. Go to Settings → Properties. Under Backup Configuration, storage redundancy should say Geo-redundant and Cross Region Restore should say Enabled.
+3. On the same page, Immutable vault should say Enabled and not locked.
+4. On the same page, under Security Settings, soft delete should be on with always-on soft delete ticked.
+5. Go to Manage → Backup policies. You should see four policies, one per tier.
 
 ### Step 5. Tag your VMs
 
-1. Open a VM and go to **Tags**.
+1. Open a VM and go to Tags.
 2. Add the name `BackupTier` with one of these values: `Critical`, `Business-Essential`, `Operational` or `Non-Production`.
-3. Click **Apply**.
+3. Click Apply.
 
-### Step 6. Turn on auto-enrollment
+### Step 6. Turn on auto-enroll
 
-Follow the [auto-enroll guide](docs/auto-enroll-with-azure-policy.md). It walks through assigning the Azure Policy in the portal so every tagged VM gets backed up by the right policy without anyone clicking Enable backup.
+Follow the [auto-enroll guide](docs/auto-enroll-with-azure-policy.md). It walks through assigning the Azure Policy in the portal so every tagged VM gets backed up by the right policy.
 
 ### Step 7. Test a restore
 
-Wait until each tier has a few days of backups, then follow the [restore validation runbook](runbooks/backup-restore-validation.md). Do not skip this. You need a working restore before step 8.
+Wait until each tier has a few days of backups, then follow the [restore test runbook](runbooks/backup-restore-validation.md). Don't skip this. You need a passed restore test before step 8.
 
 ### Step 8. Lock immutability
 
-> This can't be undone. Once a vault is locked, nobody can shorten its retention, ever. If a policy has a typo, you're paying for it for years. Don't lock vaults in a lab.
+This can't be undone. Once a vault is locked, nobody can shorten its retention for as long as the vault exists. If a policy keeps backups too long, you pay for that storage until each backup expires. Don't lock test vaults.
 
-1. Open Cloud Shell and pick **PowerShell** this time.
-2. Go to the repo folder with `cd azure-immutable-backup-vaults`.
-3. Dry run first. `-WhatIf` shows what would happen without changing anything:
+1. Open Cloud Shell and pick PowerShell this time.
+2. Run `cd azure-immutable-backup-vaults`.
+3. Do a dry run first. `-WhatIf` shows what would happen without changing anything:
 
    ```powershell
-   ./scripts/Lock-VaultImmutability.ps1 -ResourceGroupName rg-backup-eastus2 -VaultName rsv-<scopeName>-eastus2 -RestoreTestReference <ticket number of your restore test> -WhatIf
+   ./scripts/Lock-VaultImmutability.ps1 -ResourceGroupName rg-backup-eastus2 -VaultName rsv-contoso-prod-eastus2 -RestoreTestReference CHG-2026-0412 -WhatIf
    ```
 
-4. Run it again without `-WhatIf` and answer the two confirmation prompts.
+4. Run it again without `-WhatIf` and answer the two prompts.
+5. In the portal, open the vault and go to Settings → Properties. Immutable vault should now say Enabled and locked. The vault's tags should show who locked it, when, and your restore test ID.
 
-The script refuses to lock a vault that isn't geo-redundant, isn't already immutable, or has nothing protected yet. After locking, it writes who locked it, when, and the restore test ticket into the vault's tags.
+The script won't lock a vault that isn't geo-redundant, doesn't have immutability turned on, or has no protected VMs yet.
+
+## Changing a tier later
+
+1. Edit `config/backup-tiers.json`.
+2. Run the Step 3 commands again. The deployment updates the policies in every vault.
+
+On an immutable vault you can make retention longer and change the schedule, but you can't make retention shorter. Azure blocks that.
 
 ## If something goes wrong
 
 | What you see | What to check |
 |---|---|
 | Deployment fails with AuthorizationFailed | You're missing Contributor on the resource group or Log Analytics Contributor on the workspace |
-| Deployment fails on the diagnostic setting | Check `workspaceId`. It has to be the full resource ID, not just the workspace name |
-| Storage redundancy can't be changed | It locks once the first backup runs. Delete and recreate the vault if it's still empty |
-| A tagged VM isn't getting backed up | The policy only checks every so often. Run a remediation task under **Policy → Remediation**, or check the tag spelling |
-| The lock script refuses | Read the warning. It tells you which check failed |
+| Deployment fails on the diagnostic setting | Check `workspaceId`. It has to be the full resource ID, not just the workspace name. |
+| Deployment fails when changing a policy | You made retention shorter on an immutable vault. Azure only allows longer retention. |
+| Storage redundancy can't be changed | It can't change once the first backup is configured. If the vault is still empty, delete it and deploy again. |
+| A tagged VM isn't getting backed up | Check the tag spelling, then run a remediation task under Policy → Remediation |
+| Secondary Region shows no backup items | Items can take up to 48 hours to show up after Cross Region Restore is turned on |
+| The lock script won't lock | Read the warning. It says which check failed. |
+| The lock script fails on `Update-AzTag` | The vault is already locked, but you don't have Tag Contributor. Add the three tags by hand under the vault's Tags. |
 
-## More detail
+## How it's built
 
-- [Recovery objectives](docs/recovery-objectives.md) has the RPO and RTO targets per tier and what each one means
-- [Why lock separately](docs/decisions/0001-immutability-locked-separately.md)
-- [Why one geo-redundant vault per region](docs/decisions/0002-one-vault-per-region-geo-redundant.md)
+`infrastructure/main.bicep` reads the tiers from `config/backup-tiers.json` and creates one policy per tier in a loop. You deploy it once per region with that region's `.bicepparam` file.
 
-## Tests
+A few choices worth explaining:
 
-CI runs these on every push. To run them yourself you need PowerShell 7, Pester and the Bicep CLI.
+- Vaults are deployed unlocked. Locking is a separate script that needs a restore test ID first. See [design decision 1](docs/design-decisions/0001-lock-immutability-separately.md).
+- There's one geo-redundant vault per region because a VM can only back up to a vault in its own region. See [design decision 2](docs/design-decisions/0002-one-geo-redundant-vault-per-region.md).
+- The Critical tier uses an Enhanced policy, which is the only type that can back up more than once a day.
+- Logs go to resource-specific tables in Log Analytics, which is what Azure Backup reports read.
+
+[Recovery objectives](docs/recovery-objectives.md) has the RPO and RTO targets per tier. RPO is how much data you can lose. RTO is how long recovery can take.
+
+## Cost
+
+Most of the cost is backup storage. Geo-redundant storage costs more than locally redundant storage, and Cross Region Restore adds its own charge. Long yearly retention on the Critical tier is what grows the bill over time, so set it from a real requirement. See [Azure Backup pricing](https://azure.microsoft.com/pricing/details/backup/).
+
+To delete a vault that isn't locked, turn off immutability, stop backup and delete the backup data. Always-on soft delete then keeps that data for the soft delete period before it's gone.
+
+## Files
+
+| File | What it is |
+|---|---|
+| `infrastructure/main.bicep` | The vault, its policies and its diagnostic setting |
+| `infrastructure/environments/*.bicepparam` | Settings for each region |
+| `config/backup-tiers.json` | Tier schedules, retention and recovery targets |
+| `scripts/Lock-VaultImmutability.ps1` | Locks immutability after a restore test |
+| `docs/auto-enroll-with-azure-policy.md` | How to auto-enroll tagged VMs |
+| `docs/recovery-objectives.md` | RPO and RTO targets per tier |
+| `docs/design-decisions/` | Why the vaults are built the way they are |
+| `runbooks/backup-restore-validation.md` | How to test a restore |
+| `tests/Vaults.Tests.ps1` | Pester tests for the config, template, script and docs |
+| `bicepconfig.json` | Bicep linter rules |
+
+## Checks
+
+CI runs on every push to main and on every pull request. It fails if any of these happen:
+
+- `main.bicep` or either `.bicepparam` file doesn't build, or the Bicep linter reports an error
+- PSScriptAnalyzer finds a warning or error in `scripts` or `tests`
+- a Pester test fails
+- gitleaks finds a secret
+
+The Pester tests compile the Bicep and check that:
+
+- there are four tiers with different policy names
+- each tier's RPO target isn't shorter than the time between its backups
+- instant restore days are within what each policy type allows
+- a more critical tier never has weaker targets or shorter daily retention than the tier below it
+- the vault has geo-redundant storage, Cross Region Restore, immutability and always-on soft delete
+- nothing in the template locks a vault
+- logs go to resource-specific tables
+- the lock script asks for confirmation, supports `-WhatIf` and requires a restore test ID
+- every relative link in the docs works
+
+To run them yourself you need PowerShell 7, Pester and the Bicep CLI:
 
 ```powershell
 Invoke-Pester ./tests -Output Detailed
 ```
 
-They compile the Bicep and check that:
+## Known gaps
 
-- each tier's schedule can actually meet its RPO
-- a more critical tier never keeps backups for less time than a less critical one
-- the vault has geo-redundancy, Cross Region Restore, immutability and soft delete set
-- nothing in the template locks a vault
-- the lock script requires confirmation and a restore test reference
-
-## Cost
-
-Most of the cost is backup storage, and geo-redundant storage costs about twice as much as local. Long yearly retention on the Critical tier is what grows the bill over time, so base it on a real requirement.
-
-An unlocked vault can be deleted once you stop protection and delete the backup data. Soft delete holds that data for another 14 days before it's really gone.
-
-## Limits
-
-- I haven't deployed this exact template. Bicep checks the policy JSON, but Azure hasn't accepted it yet.
-- Database backups for Azure SQL and PostgreSQL aren't covered here. Those are set up on the database side.
+- I haven't deployed this exact template. Bicep checks the template, but Azure hasn't accepted it yet.
+- Weekly, monthly and yearly backups are kept from Sunday, the first Sunday of the month, and the first Sunday of January. Those are set in `main.bicep`, not the tier config.
+- Policy times are in UTC.
+- Cross Region Restore can lag up to 36 hours, which is longer than the 24 hour RPO targets.
+- The lock script only counts protected Azure VMs.
+- Azure SQL and PostgreSQL backups aren't covered. Those are set up on the database side.

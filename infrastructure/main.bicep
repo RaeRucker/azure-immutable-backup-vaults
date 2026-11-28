@@ -1,11 +1,10 @@
-// Regional backup foundation (resource group scope, one deployment per region):
-//   - Recovery Services vault: GRS with Cross Region Restore, immutability
-//     (Unlocked; locking is a separate, deliberate step), always-on soft delete
-//   - Azure VM backup policies for each tier (Critical, Business-Essential, Operational, Non-Production) from config/backup-tiers.json
-//   - Resource-specific diagnostic logs to Log Analytics (the AddonAzureBackup*
-//     tables used by the alerts in cloud-observability-incident-response)
+// One deployment per region, at resource group scope. It creates:
+//   - a Recovery Services vault with geo-redundant storage, Cross Region Restore,
+//     immutability turned on but not locked, and always-on soft delete
+//   - one Azure VM backup policy per tier from config/backup-tiers.json
+//   - a diagnostic setting that sends backup logs to resource-specific tables in Log Analytics
 //
-// Deploy per region:
+// Deploy:
 //   az deployment group create -g rg-backup-eastus2 --template-file infrastructure/main.bicep \
 //     --parameters infrastructure/environments/eastus2.bicepparam
 
@@ -13,6 +12,7 @@
 @maxLength(20)
 param scopeName string
 
+@description('Region for the vault. A VM can only back up to a vault in its own region.')
 param location string = resourceGroup().location
 
 @description('Log Analytics workspace for backup diagnostics. Empty skips diagnostics.')
@@ -21,6 +21,28 @@ param workspaceId string = ''
 @description('Disable public network access to the vault (requires private endpoints for backup traffic).')
 param disablePublicNetworkAccess bool = false
 
+@description('Vault name. Default is rsv-<scopeName>-<location>.')
+param vaultName string = 'rsv-${scopeName}-${location}'
+
+@description('Days a deleted backup is kept before it is gone for good.')
+@minValue(14)
+@maxValue(180)
+param softDeleteRetentionDays int = 14
+
+@description('Name of the diagnostic setting on the vault.')
+param diagnosticSettingName string = 'diag-to-law'
+
+@description('Vault log categories sent to Log Analytics. All of these write to resource-specific tables.')
+param logCategories array = [
+  'CoreAzureBackup'
+  'AddonAzureBackupJobs'
+  'AddonAzureBackupPolicy'
+  'AddonAzureBackupStorage'
+  'AddonAzureBackupProtectedInstance'
+  'AzureBackupOperations'
+]
+
+@description('Tags on the vault.')
 param tags object = {
   workload: 'backup'
   managedBy: 'bicep'
@@ -28,11 +50,11 @@ param tags object = {
 
 var tiers = loadJsonContent('../config/backup-tiers.json').tiers
 
-// Backup schedule and retention times are full timestamps; only the time of day matters.
+// Schedule and retention times are full timestamps. Only the time of day is used.
 func scheduleTime(hhmm string) string => '2026-01-04T${hhmm}:00Z'
 
 resource vault 'Microsoft.RecoveryServices/vaults@2024-04-01' = {
-  name: 'rsv-${scopeName}-${location}'
+  name: vaultName
   location: location
   tags: tags
   sku: {
@@ -42,20 +64,20 @@ resource vault 'Microsoft.RecoveryServices/vaults@2024-04-01' = {
   properties: {
     publicNetworkAccess: disablePublicNetworkAccess ? 'Disabled' : 'Enabled'
     redundancySettings: {
-      // Must be set before the first item is protected; it can't be changed afterwards.
+      // Can't be changed after the first backup is configured.
       standardTierStorageRedundancy: 'GeoRedundant'
       crossRegionRestore: 'Enabled'
     }
     securitySettings: {
       immutabilitySettings: {
-        // Unlocked: recovery points can't be deleted early, but the setting can still be
-        // changed. Lock with scripts/Lock-VaultImmutability.ps1 after restore tests pass.
+        // Unlocked means immutability is on but can still be turned off.
+        // Lock it with scripts/Lock-VaultImmutability.ps1 after a restore test passes.
         state: 'Unlocked'
       }
       softDeleteSettings: {
-        // AlwaysON can't be turned off once set.
+        // Always-on soft delete can't be turned off once set.
         softDeleteState: 'AlwaysON'
-        softDeleteRetentionPeriodInDays: 14
+        softDeleteRetentionPeriodInDays: softDeleteRetentionDays
         enhancedSecurityState: 'Enabled'
       }
     }
@@ -160,20 +182,12 @@ resource policies 'Microsoft.RecoveryServices/vaults/backupPolicies@2024-04-01' 
 }]
 
 resource diagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (!empty(workspaceId)) {
-  name: 'diag-to-law'
+  name: diagnosticSettingName
   scope: vault
   properties: {
     workspaceId: workspaceId
     logAnalyticsDestinationType: 'Dedicated'
-    logs: [for category in [
-      'CoreAzureBackup'
-      'AddonAzureBackupJobs'
-      'AddonAzureBackupPolicy'
-      'AddonAzureBackupStorage'
-      'AddonAzureBackupProtectedInstance'
-      'AzureSiteRecoveryJobs'
-      'AzureSiteRecoveryReplicatedItems'
-    ]: {
+    logs: [for category in logCategories: {
       category: category
       enabled: true
     }]

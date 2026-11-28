@@ -1,40 +1,42 @@
 # Recovery objectives
 
-> RPO and RTO values on this page are design targets. They describe what each tier is built to achieve. No measured recovery times are recorded here. Real numbers come from restore tests and test failovers.
+The numbers on this page are targets. They say what each tier is built for. Nothing here has been measured. Real numbers come from restore tests.
 
-## Definitions
+This page covers the backup side only. Replication and failover with Azure Site Recovery are in a separate repo, [azure-site-recovery-failover-testing](https://github.com/RaeRucker/azure-site-recovery-failover-testing).
 
-| Term | Meaning | Determined by |
+## Terms
+
+| Term | What it means | What sets it |
 |---|---|---|
-| RPO (recovery point objective) | Maximum acceptable data loss, measured backwards from the failure | Backup or replication frequency |
-| RTO (recovery time objective) | Maximum acceptable time from declaring a disaster to the service working again | Recovery method, automation, dependencies, people |
-| MTD | Maximum tolerable downtime before business harm becomes severe | Business owner |
+| RPO, recovery point objective | The most data you can afford to lose, counted back from the failure | How often backups run |
+| RTO, recovery time objective | The longest a system can be down, from the moment you declare a problem to the system working again | How you recover it, and how much of that is automated |
 
-RTO counts the whole path: detection, the decision to fail over, the technical recovery, dependency recovery, and validation. The technical restore alone is usually the shortest part.
+RTO counts everything from spotting the problem to checking the system works again, not just the restore. The restore itself is usually the shortest part.
 
 ## Targets by tier
 
-| Tier | Workloads | RPO target | RTO target | Primary recovery method | Why this method |
-|---|---|---|---|---|---|
-| Critical | Customer-facing, financial, identity | 6 h (backup); minutes (ASR replication) | 4 h | Azure Site Recovery failover to the secondary region. Backup (every 6 hours, Enhanced policy) covers logical corruption. | Restoring many VMs from backup can't meet a 4 h RTO. Replication can. |
-| Business-Essential | Internal apps the business needs day to day | 24 h | 24 h | Cross Region Restore (CRR) from the GRS vault in the paired region | No replication cost; restore time fits the target |
-| Operational | Supporting services: file servers, jump boxes, tooling | 24 h | 72 h | CRR, or rebuild from infrastructure as code plus a data restore | Rebuild is often faster and cleaner than restoring a whole VM |
-| Non-Production | Dev, test, and sandbox | 24 h | 1 week | Rebuild from IaC | Data rarely needs recovery |
-
-Tier definitions and retention are in [`config/backup-tiers.json`](../config/backup-tiers.json). The tests check that RPO targets match each tier's backup frequency.
-
-## Two kinds of failure, two kinds of recovery
-
-| Failure | Example | Replication (ASR) helps? | Backup helps? |
+| Tier | RPO target | RTO target | How it's recovered from backup |
 |---|---|---|---|
-| Regional or infrastructure | Region outage, zone failure, host failure | Yes: fail over to the replica | Yes, via CRR (slower) |
-| Logical | Ransomware, accidental deletion, bad data migration | No. Replication copies the damage within minutes. | Yes: restore a point in time before the damage |
+| Critical | 6 hours | 4 hours | Restore from the 6-hourly backup for corruption, deletion or ransomware. A regional outage needs Site Recovery to meet 4 hours. |
+| Business-Essential | 24 hours | 24 hours | Restore in the same region, or Cross Region Restore in the paired region |
+| Operational | 24 hours | 72 hours | Cross Region Restore, or rebuild the server and restore only the data |
+| Non-Production | 24 hours | 1 week | Rebuild. Restore only if someone needs the data. |
 
-Critical systems therefore need both: ASR for the RTO, and immutable backups for logical recovery. That is why the vaults are immutable and soft delete is always on. A compromised administrator can't delete the recovery points that ransomware recovery depends on.
+The tiers, schedules and retention are in [`config/backup-tiers.json`](../config/backup-tiers.json). The tests check that each tier's RPO target isn't shorter than the time between its backups.
 
-## Regional considerations
+## What backup covers and what it doesn't
 
-- Paired region: GRS replicates to the region's Azure pair (for example East US 2 to Central US). CRR restores there. Check the pair for your primary region.
-- Capacity: a regional outage moves many customers to the same paired region at once. Deploy capacity reservations, or accept the risk that VM sizes may be unavailable during a large event.
-- Dependencies across regions: identity (domain controllers), DNS, Key Vault, and network connectivity must already exist in the secondary region, or recover first. See the [dependency map](https://github.com/RaeRucker/azure-site-recovery-failover-testing/blob/main/docs/dependency-map.md) in the failover testing repo.
-- GRS replication lag: geo-replicated backup data trails the primary. Microsoft documents an RPO for CRR in hours, not minutes. Business-Essential targets assume that.
+| Failure | Example | Can backup recover it? |
+|---|---|---|
+| Logical | Ransomware, an accidental delete, a bad data change | Yes. Restore a recovery point from before the damage. Replication can't help here because it copies the damage within minutes. |
+| Regional | A region or zone outage | Yes, through Cross Region Restore, but slowly. For a tight RTO, use Site Recovery. |
+
+Logical failures are why the vaults are immutable and soft delete is always on. An attacker with admin access can't delete the recovery points you'd need to recover from ransomware.
+
+## Restoring in the paired region
+
+- Geo-redundant storage copies backups to the region's Azure pair, for example East US 2 to Central US. Cross Region Restore restores there. Check the pair for your own regions.
+- The copy in the paired region lags behind. Microsoft says the worst case for Azure VMs is 36 hours. That's longer than the 24 hour RPO targets, so after a regional outage you could lose more data than the target.
+- Backup items can take up to 48 hours to show up in the paired region after Cross Region Restore is turned on.
+- In a large outage, many people restore into the same paired region at once. Some VM sizes may not be available. Capacity reservations are the way around that, at a cost.
+- What the restored VMs depend on, like domain controllers, DNS, Key Vault and the network, has to exist in the paired region already, or be recovered first.

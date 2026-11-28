@@ -1,49 +1,77 @@
-# Runbook: Backup restore validation
+# Runbook: Test a backup restore
 
-A backup that hasn't been restored is an assumption. This procedure proves that recovery points can be restored, are complete, and are usable. Run it quarterly per tier, after changes to backup configuration, and before locking vault immutability ([`scripts/Lock-VaultImmutability.ps1`](../scripts/Lock-VaultImmutability.ps1) requires a reference to this test).
+A backup you haven't restored is only a guess. This runbook checks that a recovery point restores, that nothing is missing, and that the system works.
 
-## Scope per run
+Run it every quarter for each tier, after any change to backup settings, and before you lock a vault. [`scripts/Lock-VaultImmutability.ps1`](../scripts/Lock-VaultImmutability.ps1) asks for the test ID from the record at the bottom of this page.
+
+## What to test and how often
 
 | Test | Critical | Business-Essential and Operational |
 |---|---|---|
 | Full VM restore to an isolated network | Every quarter | Every quarter, one VM per tier |
-| File-level restore | Every quarter | Every half year |
-| Cross Region Restore | Every half year | Yearly |
-| Database point-in-time restore (SQL workload) | Every quarter | n/a |
+| File restore | Every quarter | Every 6 months |
+| Cross Region Restore | Every 6 months | Every year |
 
-## Procedure: full VM restore (portal)
+Non-Production doesn't need regular restore tests. Those VMs are rebuilt, not restored.
 
-1. Vault → Backup items → Azure Virtual Machine → select the VM → Restore VM.
-2. Restore point: pick one at least 24 h old. That proves older points work, not only the latest snapshot.
-3. Restore type: *Create new virtual machine*, in an isolated VNet with no peering, so the restored VM can't conflict with production (same hostname and IP).
-4. Staging location: a storage account in the same region (needed for vault-tier points).
-5. Record the start time. When the restore job completes, record the end time and job duration.
+## Permissions
 
-### Validate
+| Who | Role | Where it's assigned | Why |
+|---|---|---|---|
+| You | Backup Operator | The vault | To start the restore |
+| You | Virtual Machine Contributor | The VM that was backed up | Restores read settings from the original VM |
+| You | Contributor | The resource group the test VM is restored into | To create the VM, its disks and its network card, and connect it to the test network |
+| You | Storage Account Contributor | The staging storage account | Restores copy data through it |
+| You, for Cross Region Restore | Backup Operator | The vault's subscription | Cross Region Restore needs it at subscription level |
 
-| Check | How | Pass |
+## Before you start
+
+1. Create a resource group for the test, like `rg-restore-test-eastus2`, in the vault's region.
+2. Create a virtual network in it with no peering and no VPN, so the restored VM can't reach anything real. The restored VM keeps the same computer name and domain settings as the original, so it must not see the real network.
+3. Create a Standard general-purpose v2 storage account in the same region for staging.
+
+For Cross Region Restore, do the same in the paired region.
+
+## Full VM restore
+
+1. In the portal, open the vault and go to Protected items → Backup items → Azure Virtual Machine.
+2. Click the VM, then Restore VM.
+3. Under Restore point, click Select. Pick one that's at least a day old. That shows older points work, not just the newest one.
+4. Under Restore configuration, pick Create new, then set Restore Type to Create new virtual machine.
+5. Give it a VM name that isn't used anywhere in the subscription, like `<vmname>-rt`.
+6. Pick the test resource group, the isolated network and its subnet.
+7. Set Staging Location to the test storage account.
+8. Click Restore and write down the time.
+9. Go to Monitoring → Backup jobs. When the restore job shows Completed, write down the end time and the duration.
+
+### Check it
+
+| Check | How | It passes when |
 |---|---|---|
-| Boots | Boot diagnostics screenshot; Bastion or Serial Console sign-in | Sign-in prompt reached |
-| Disks complete | Disk Management / `lsblk` shows every data disk | All volumes present |
-| Data current | Newest file timestamp or newest DB row vs restore point time | Within one backup interval |
-| Application data | Service starts; `DBCC CHECKDB` for SQL | No errors |
+| It boots | Help → Boot diagnostics, then sign in through Serial console or Bastion | You reach a sign-in prompt |
+| No disks are missing | Disk Management on Windows, or `lsblk` on Linux | Every data disk is there |
+| The data is recent | Compare the newest file or database row with the restore point time | Within one backup interval |
+| The app works | Start the service. For SQL Server, run `DBCC CHECKDB`. | No errors |
 
 ### Clean up
 
-Delete the restored VM, its disks, its NIC, and the staging blobs. Leave none running: they cost money and duplicate production identities.
+Delete the restored VM, its disks, its network card and the files in the staging storage account. Don't leave any of it running. It costs money and has the same identity as the real server.
 
-## Procedure: Cross Region Restore
+## Cross Region Restore
 
-1. Vault → Backup items → VM → Restore VM → Secondary region. Only available when CRR is enabled (it is, in `infrastructure/main.bicep`).
-2. Same validation as above, in a VNet in the paired region.
-3. Record the age of the newest available secondary-region recovery point. That's the effective RPO for a regional failure using CRR.
+1. In the vault, go to Protected items → Backup items and switch the view to Secondary Region. This only shows up when Cross Region Restore is on, which `infrastructure/main.bicep` does.
+2. Restore the VM the same way as above, using the test network and staging storage account in the paired region.
+3. Check it the same way.
+4. Write down how old the newest recovery point in the paired region was. That's how much data you'd really lose if the main region went down.
 
 ## Record
 
+Copy this table into your ticket or test report.
+
 | Field | Value |
 |---|---|
-| Test ID (use as the lock evidence reference) | |
-| Vault / item / restore point time | |
+| Test ID. Use this as `-RestoreTestReference` when locking. | |
+| Vault, VM and restore point time | |
 | Restore job duration | |
-| Validation results | |
-| Issues found | |
+| Check results | |
+| Problems found | |

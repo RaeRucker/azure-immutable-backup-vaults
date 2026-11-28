@@ -1,23 +1,23 @@
 <#
 .SYNOPSIS
-    Locks immutability on Recovery Services vaults. IRREVERSIBLE.
+    Locks immutability on Recovery Services vaults. This can't be undone.
 .DESCRIPTION
     A locked vault can never be unlocked, and backup retention can't be reduced for
-    as long as the vault exists. Locking is therefore a separate, deliberate step,
-    gated on evidence:
+    as long as the vault exists. So locking is its own step, and it needs proof first.
 
-      - -RestoreTestReference is mandatory: the ticket or report ID of a successful
-        restore test for this vault (see runbooks/backup-restore-validation.md).
-      - The vault must already be immutable (Unlocked), GRS, and have at least one
-        protected item.
-      - ConfirmImpact High and an additional ShouldContinue prompt; -WhatIf supported.
+      - -RestoreTestReference is required. It's the ticket or report ID of a passed
+        restore test for this vault. See runbooks/backup-restore-validation.md.
+      - The vault must already have immutability turned on but not locked, use
+        geo-redundant storage, and have at least one protected Azure VM.
+      - You're asked to confirm twice. -WhatIf shows what would happen.
 
-    Each lock is recorded as a tag on the vault (immutabilityLockedBy, ...LockedOn,
-    ...Evidence) so the decision is auditable from the resource itself.
+    After locking, the script writes who locked the vault, when, and the restore test
+    reference into tags on the vault. The tag names are parameters.
 .EXAMPLE
     ./scripts/Lock-VaultImmutability.ps1 -ResourceGroupName rg-backup-eastus2 -VaultName rsv-contoso-prod-eastus2 -RestoreTestReference CHG-2026-0412 -WhatIf
 .NOTES
-    Requires Az.RecoveryServices and Backup Contributor (or Contributor) on the vault.
+    Needs the Az.RecoveryServices module. Needs Contributor on the vault, or Backup
+    Contributor plus Tag Contributor.
 #>
 [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
 param(
@@ -27,6 +27,10 @@ param(
     [Parameter(Mandatory)]
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$')]
     [string] $RestoreTestReference,
+
+    [string] $LockedByTagName = 'immutabilityLockedBy',
+    [string] $LockedOnTagName = 'immutabilityLockedOn',
+    [string] $EvidenceTagName = 'immutabilityEvidence',
 
     [switch] $Force
 )
@@ -53,7 +57,11 @@ foreach ($name in $VaultName) {
     $message = "LOCK immutability on $name ($($items.Count) protected items). This can never be undone, and retention can never be reduced. Evidence: $RestoreTestReference"
     if ($PSCmdlet.ShouldProcess($name, 'Lock vault immutability (irreversible)') -and ($Force -or $PSCmdlet.ShouldContinue($message, 'Irreversible change'))) {
         $null = Update-AzRecoveryServicesVault -ResourceGroupName $ResourceGroupName -Name $name -ImmutabilityState Locked
-        $tags = @{ immutabilityLockedBy = (Get-AzContext).Account.Id; immutabilityLockedOn = (Get-Date -Format 'yyyy-MM-dd'); immutabilityEvidence = $RestoreTestReference }
+        $tags = @{
+            $LockedByTagName = (Get-AzContext).Account.Id
+            $LockedOnTagName = (Get-Date -Format 'yyyy-MM-dd')
+            $EvidenceTagName = $RestoreTestReference
+        }
         $null = Update-AzTag -ResourceId $vault.ID -Tag $tags -Operation Merge
         Write-Output "$name locked. Evidence $RestoreTestReference recorded in vault tags."
     }

@@ -80,10 +80,13 @@ Describe 'Compiled vault template' {
         $script:policy.copy.count | Should -Match 'tiers'
     }
 
-    It 'sends backup and Site Recovery logs to resource-specific tables' {
+    It 'sends backup logs to resource-specific tables' {
         $diag = $script:resources | Where-Object type -EQ 'Microsoft.Insights/diagnosticSettings'
         $diag.properties.logAnalyticsDestinationType | Should -Be 'Dedicated'
-        ($diag | ConvertTo-Json -Depth 20) | Should -Match 'AddonAzureBackupJobs'
+        $categories = $script:template.parameters.logCategories.defaultValue
+        $categories | Should -Contain 'AddonAzureBackupJobs'
+        # These categories only write to the AzureDiagnostics table, not resource-specific tables.
+        $categories | Where-Object { $_ -eq 'AzureBackupReport' -or $_ -like 'AzureSiteRecovery*' } | Should -BeNullOrEmpty
     }
 }
 
