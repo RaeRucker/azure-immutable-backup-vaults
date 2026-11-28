@@ -10,7 +10,7 @@ A VM's backup tier comes from one tag, `BackupTier`. Azure Policy reads that tag
 |---|---|---|
 | Tier | A name like `Critical` with a backup schedule and retention | `config/backup-tiers.json` |
 | Backup policy | One per tier, with the same name in every vault, like `pol-vm-critical-6h` | `infrastructure/main.bicep` |
-| Vault | One per region, like `rsv-contoso-prod-eastus2` | `infrastructure/main.bicep` |
+| Vault | One per region, like `rsv-contoso-eastus2` | `infrastructure/main.bicep` |
 | Policy assignment | One per tier per region, like `backup-critical-eastus2` | `infrastructure/auto-enroll.bicep` |
 | Tag | `BackupTier` on the VM, with a tier name as the value | You, or a tag policy |
 
@@ -24,7 +24,7 @@ With four tiers and two regions, that's two vaults, eight backup policies and ei
 | You add a `BackupTier` tag to a VM after auto-enroll is set up | Same as a new VM. Adding the tag counts as an update, so the policy picks it up. |
 | A VM was already tagged before you set up auto-enroll | Nothing happens on its own. It shows as non-compliant in Policy. Run a remediation task once to enroll these. |
 | A VM has no `BackupTier` tag | It's never enrolled. Use the coverage query in the [auto-enroll guide](auto-enroll-with-azure-policy.md#step-5-check-coverage) to find these. |
-| The tag value doesn't match a tier, like `Critcal` | Same as no tag. The value has to match a tier name in the config. |
+| The tag value is misspelled, like `Critcal` | Same as no tag. Upper or lower case doesn't matter, but the spelling has to match a tier name in the config. |
 | The VM is in a region with no vault and no assignments | It's never enrolled. Deploy a vault and auto-enroll for that region first. |
 | The VM is already backed up, by any vault or policy | The policy treats it as done and leaves it alone |
 | You change the tag on a VM that's already backed up | Nothing changes. It stays on its old policy. See [Moving a VM to a different tier](#moving-a-vm-to-a-different-tier). |

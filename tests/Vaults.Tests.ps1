@@ -48,6 +48,10 @@ Describe 'Backup tier design' {
         $_.instantRestoreDays | Should -BeLessOrEqual $max
     }
 
+    It 'every tier uses an Enhanced (V2) policy so Trusted Launch VMs can be backed up' {
+        $script:tiers | Where-Object policyType -NE 'V2' | Should -BeNullOrEmpty
+    }
+
     It 'hourly schedules use Enhanced (V2) policies' {
         foreach ($t in $script:tiers | Where-Object frequency -EQ 'Hourly') { $t.policyType | Should -Be 'V2' }
     }

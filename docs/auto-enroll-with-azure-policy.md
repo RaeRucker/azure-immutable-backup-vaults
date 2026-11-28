@@ -26,7 +26,7 @@ These go in `infrastructure/environments/auto-enroll-<region>.bicepparam`, one f
 |---|---|
 | `location` | The region this file covers, like `eastus2`. Only VMs in this region are enrolled. |
 | `vaultResourceGroupName` | The resource group of this region's vault. Default is `rg-backup-<region>`, matching the main setup. |
-| `vaultName` | This region's vault. Default is `rsv-contoso-prod-<region>`. Match it to the `scopeName` you used. |
+| `vaultName` | This region's vault. Default is `rsv-contoso-<region>`. Match it to the `scopeName` you used. |
 | `effect` | `DeployIfNotExists` turns backup on. `AuditIfNotExists` only reports what would be enrolled, which is a safe way to preview. |
 | `assignmentPrefix` | Optional. The start of each assignment name. Default is `backup`, giving names like `backup-critical-eastus2`. |
 
@@ -42,7 +42,7 @@ Auto-enroll points at vaults and backup policies that are already there. Finish 
 2. Add the name `BackupTier` with one of these values: `Critical`, `Business-Essential`, `Operational` or `Non-Production`.
 3. Click Apply.
 
-The value has to match a tier name exactly. A VM without the tag is never enrolled.
+The value has to be spelled the same as a tier name. Upper or lower case doesn't matter. A VM without the tag is never enrolled.
 
 If you want every new VM to have the tag, assign the built-in policy Require a tag on resources. If you set tiers per resource group, use Inherit a tag from the resource group if missing.
 

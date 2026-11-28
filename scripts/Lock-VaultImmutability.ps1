@@ -14,7 +14,7 @@
     After locking, the script writes who locked the vault, when, and the restore test
     reference into tags on the vault. The tag names are parameters.
 .EXAMPLE
-    ./scripts/Lock-VaultImmutability.ps1 -ResourceGroupName rg-backup-eastus2 -VaultName rsv-contoso-prod-eastus2 -RestoreTestReference CHG-2026-0412 -WhatIf
+    ./scripts/Lock-VaultImmutability.ps1 -ResourceGroupName rg-backup-eastus2 -VaultName rsv-contoso-eastus2 -RestoreTestReference CHG-2026-0412 -WhatIf
 .NOTES
     Needs the Az.RecoveryServices module. Needs Contributor on the vault, or Backup
     Contributor plus Tag Contributor.

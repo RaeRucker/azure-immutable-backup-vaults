@@ -6,13 +6,19 @@ You deploy everything from Azure Cloud Shell, one region at a time. The names, r
 
 ![How auto-enroll and backup tiers work](docs/images/how-it-works.png)
 
+A few things the diagram doesn't show:
+
+- Policy picks up a new VM, or one tagged for the first time, usually within about 30 minutes.
+- Changing a VM's tag later doesn't move it to a new tier. See [moving a VM to a different tier](docs/how-tiering-works.md#moving-a-vm-to-a-different-tier).
+- VMs built from custom or gallery images aren't matched by the built-in policy. Add those by hand.
+
 ## What it does
 
 Each vault gets:
 
 | Setting | What it does |
 |---|---|
-| Geo-redundant storage | Keeps a copy of every backup in the paired region |
+| Geo-redundant storage | Copies each day's vault backup to the paired region. Quick-restore snapshots stay in the main region, and the copy can run up to 36 hours behind. |
 | Cross Region Restore | Lets you restore in the paired region if the main one goes down |
 | Immutability, turned on but not locked | Stops anyone deleting recovery points before they expire |
 | Always-on soft delete | Keeps deleted backups for 14 more days by default. It can't be turned off. |
@@ -57,7 +63,7 @@ A managed identity is an account Azure creates for each policy assignment, so it
 
 | Setting | What to put in |
 |---|---|
-| `scopeName` | In each file in `infrastructure/environments`. A short name for the subscription or workload, up to 20 characters, like `contoso-prod`. It goes into the vault name. |
+| `scopeName` | In each file in `infrastructure/environments`. A short name for the subscription or workload, up to 20 characters, like `contoso`. It goes into the vault name. |
 | `location` | In each file in `infrastructure/environments`. The region, like `eastus2`. Rename the file to match if you change it. |
 | `workspaceId` | In each file in `infrastructure/environments`. Resource ID of your Log Analytics workspace. Find it on the workspace under Overview → JSON View. It starts with `/subscriptions/`. Leave it as `''` to skip logs. |
 | `softDeleteRetentionDays` | In each file in `infrastructure/environments`. How many days deleted backups are kept, 14 to 180. Default is `14`. |
@@ -172,7 +178,7 @@ This can't be undone. Once a vault is locked, nobody can shorten its retention f
 3. Do a dry run first. `-WhatIf` shows what would happen without changing anything:
 
    ```powershell
-   ./scripts/Lock-VaultImmutability.ps1 -ResourceGroupName rg-backup-eastus2 -VaultName rsv-contoso-prod-eastus2 -RestoreTestReference CHG-2026-0412 -WhatIf
+   ./scripts/Lock-VaultImmutability.ps1 -ResourceGroupName rg-backup-eastus2 -VaultName rsv-contoso-eastus2 -RestoreTestReference CHG-2026-0412 -WhatIf
    ```
 
 4. Run it again without `-WhatIf` and answer the two prompts.
@@ -214,7 +220,7 @@ A few choices worth explaining:
 
 - Vaults are deployed unlocked. Locking is a separate script that needs a restore test ID first. See [design decision 1](docs/design-decisions/0001-lock-immutability-separately.md).
 - There's one geo-redundant vault per region because a VM can only back up to a vault in its own region. See [design decision 2](docs/design-decisions/0002-one-geo-redundant-vault-per-region.md).
-- The Critical tier uses an Enhanced policy, which is the only type that can back up more than once a day.
+- Every tier uses an Enhanced policy. Standard policies can't back up Trusted Launch VMs, which Azure creates by default, so a Standard tier would make auto-enroll fail on most new VMs. Enhanced is also the only type that can back up more than once a day, which the Critical tier needs.
 - Logs go to resource-specific tables in Log Analytics, which is what Azure Backup reports read.
 
 [Recovery objectives](docs/recovery-objectives.md) has the RPO and RTO targets per tier. RPO is how much data you can lose. RTO is how long recovery can take.
@@ -261,6 +267,7 @@ The Pester tests compile the Bicep and check that:
 - each tier's RPO target isn't shorter than the time between its backups
 - instant restore days are within what each policy type allows
 - a more critical tier never has weaker targets or shorter daily retention than the tier below it
+- every tier uses an Enhanced policy
 - the vault has geo-redundant storage, Cross Region Restore, immutability and always-on soft delete
 - nothing in the template locks a vault
 - auto-enroll creates one assignment per tier with the built-in tag policy, matches the tier tag, points each tier at its own backup policy, and grants the two roles the policy needs

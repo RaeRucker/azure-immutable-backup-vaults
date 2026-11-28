@@ -100,6 +100,15 @@ resource policies 'Microsoft.RecoveryServices/vaults/backupPolicies@2024-04-01' 
         scheduleWindowStartTime: scheduleTime(t.startTimeUtc)
         scheduleWindowDuration: t.windowHours
       }
+    } : t.policyType == 'V2' ? {
+      // Daily Enhanced policy. Needed for Trusted Launch VMs, which are the default for new VMs.
+      schedulePolicyType: 'SimpleSchedulePolicyV2'
+      scheduleRunFrequency: 'Daily'
+      dailySchedule: {
+        scheduleRunTimes: [
+          scheduleTime(t.startTimeUtc)
+        ]
+      }
     } : {
       schedulePolicyType: 'SimpleSchedulePolicy'
       scheduleRunFrequency: 'Daily'
